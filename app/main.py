@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app import catalogs, errors
+from app import catalogs, documents, errors
 from app.db import pool
 
 
@@ -23,6 +23,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 errors.install(app)
+app.include_router(documents.router)
 
 for router in catalogs.routers:
     app.include_router(router)

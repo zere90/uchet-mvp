@@ -42,6 +42,16 @@ def _field_from_pg(e: psycopg.Error) -> str:
 
 # Сообщения pydantic -> понятный текст для бухгалтера
 _PYDANTIC_MESSAGES = {
+    "greater_than": "Значение должно быть больше нуля",
+    "greater_than_equal": "Значение не может быть отрицательным",
+    "decimal_parsing": "Укажите число",
+    "decimal_type": "Укажите число",
+    "finite_number": "Укажите конечное число",
+    "decimal_max_digits": "Слишком много цифр в числе",
+    "decimal_max_places": "Слишком много знаков после запятой",
+    "decimal_whole_digits": "Слишком много цифр до запятой",
+    "datetime_from_date_parsing": "Неверная дата и время",
+    "datetime_parsing": "Неверная дата и время",
     "missing": "Обязательное поле не заполнено",
     "string_too_short": "Поле не может быть пустым",
     "string_too_long": "Слишком длинное значение",

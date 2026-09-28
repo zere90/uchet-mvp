@@ -51,8 +51,8 @@ def test_numbering_no_duplicates_in_parallel():
 
 def test_line_qty_must_be_positive(db):
     doc = db.execute("""
-        INSERT INTO doc_goods_receipt (number, doc_date, org_id, counterparty_id, warehouse_id, author_id)
-        VALUES ('ПОС-000001', now(), %s, '00000000-0000-0000-0000-000000000101',
+        INSERT INTO doc_goods_receipt (number, number_year, doc_date, org_id, counterparty_id, warehouse_id, author_id)
+        VALUES ('ПОС-000001', 2026, '2026-09-14 00:00:00+00', %s, '00000000-0000-0000-0000-000000000101',
                 '00000000-0000-0000-0000-000000000301', gen_random_uuid()) RETURNING id""",
         (ORG,)).fetchone()["id"]
     with pytest.raises(pg.CheckViolation):

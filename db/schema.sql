@@ -119,6 +119,7 @@ CREATE TABLE ref_account (
 CREATE TABLE doc_goods_receipt (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   number           varchar(20) NOT NULL,
+  number_year      int NOT NULL,                    -- год нумерации по Asia/Almaty
   doc_date         timestamptz NOT NULL,
   org_id           uuid NOT NULL REFERENCES ref_organization,
   counterparty_id  uuid NOT NULL REFERENCES ref_counterparty,
@@ -134,7 +135,7 @@ CREATE TABLE doc_goods_receipt (
   posted_at        timestamptz,
   author_id        uuid NOT NULL,
   created_at       timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (org_id, number)
+  UNIQUE (org_id, number_year, number)
 );
 
 -- Строки документа (табличная часть)

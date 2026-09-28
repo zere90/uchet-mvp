@@ -24,8 +24,8 @@ def document(db, items=None):
         items = [(601, "40", "1850"), (602, "6", "22500"), (603, "200", "190")]
     doc = db.execute("""
         INSERT INTO doc_goods_receipt
-          (number, doc_date, org_id, counterparty_id, contract_id, warehouse_id, mol_id, author_id)
-        VALUES ('ПОС-000001', '2026-09-14 00:00:00+00', %s, %s, %s, %s, %s, %s) RETURNING id
+          (number, number_year, doc_date, org_id, counterparty_id, contract_id, warehouse_id, mol_id, author_id)
+        VALUES ('ПОС-000001', 2026, '2026-09-14 00:00:00+00', %s, %s, %s, %s, %s, %s) RETURNING id
         """, (ORG, SUPPLIER, CONTRACT, WAREHOUSE, MOL, USER)).fetchone()["id"]
     for number, (item, qty, price) in enumerate(items, 1):
         db.execute("""
