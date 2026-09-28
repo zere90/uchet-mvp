@@ -34,10 +34,12 @@ CONDITION = re.compile(rf"\s*({PATH})\s*==\s*'([^']*)'\s*")
 
 
 def _fail(field, code, message):
+    """Оформить ошибку в общем формате, чтобы её можно было показать пользователю."""
     raise PostingError([detail(field, code, message)])
 
 
 def _path(path, doc, line):
+    """Получить значение по пути из правила без выполнения произвольного кода."""
     if not isinstance(path, str) or not re.fullmatch(PATH, path):
         raise ValueError("Недопустимый путь в правиле")
     root, *parts = path.split(".")
@@ -45,12 +47,15 @@ def _path(path, doc, line):
     for part in parts:
         if not isinstance(value, dict):
             raise ValueError("Путь не соответствует данным документа")
+        # Например, doc.warehouse читаем из поля warehouse_id.
         key = part if part in value else part + "_id"
         value = value[key]
+    # line.item возвращает ссылку, а line.item.kind — вид номенклатуры.
     return value["id"] if isinstance(value, dict) else value
 
 
 def _matches(rule, doc, line):
+    """Проверить условие правила, чтобы применять его только к подходящим данным."""
     if "when" not in rule:
         return True
     match = CONDITION.fullmatch(rule["when"])
@@ -60,11 +65,13 @@ def _matches(rule, doc, line):
 
 
 def _dims(paths, doc, line):
+    """Собрать аналитику проводки в JSON, преобразовав ссылки UUID в строки."""
     return Jsonb({p.rsplit(".", 1)[-1]: str(value) if isinstance(value, UUID) else value
                   for p in paths for value in [_path(p, doc, line)]})
 
 
 def _lock(cur, doc_id, *, nowait):
+    """Загрузить и заблокировать документ для защиты от одновременного проведения."""
     cur.execute("SELECT * FROM doc_goods_receipt WHERE id = %s FOR UPDATE"
                 + (" NOWAIT" if nowait else ""), (doc_id,))
     doc = cur.fetchone()
@@ -74,6 +81,7 @@ def _lock(cur, doc_id, *, nowait):
 
 
 def _validate(cur, doc, lines):
+    """Проверить реквизиты и суммы до формирования движений документа."""
     if doc["status"] == "deleted":
         _fail("status", "deleted", "Документ помечен на удаление")
     problems = []
@@ -117,72 +125,97 @@ def _validate(cur, doc, lines):
 
 
 def _clear(cur, doc_id):
+    """Удалить прежние движения и проводки, чтобы отмена и перепроведение не оставляли дублей."""
     for table in [r["table"] for r in REGISTERS.values()] + ["acc_entry"]:
         cur.execute(sql.SQL("DELETE FROM {} WHERE recorder_type = %s AND recorder_id = %s")
                     .format(sql.Identifier(table)), (DOC_TYPE, doc_id))
 
 
 def _base(doc, number):
+    """Собрать общие поля движения для связи с документом и датой операции."""
     return {"recorder_type": DOC_TYPE, "recorder_id": doc["id"],
             "line_no": number, "period": doc["doc_date"]}
 
 
-def _build(doc, lines, rules):
+def _build_movements(doc, lines, rules):
+    """Подготовить движения по правилам регистров для проверки перед записью."""
     registers = {name: [] for name in REGISTERS}
-    entries, matched = [], set()
     for stored in rules:
+        if stored["kind"] != "register":
+            continue
         rule = stored["definition"]
         try:
             scope = rule["for_each"]
-            if scope not in ("lines", "document") or (stored["kind"] == "entry" and scope != "lines"):
+            if scope not in ("lines", "document"):
                 raise ValueError("Неверная область применения правила")
-            for index, line in enumerate(lines if scope == "lines" else [None]):
-                if stored["kind"] == "entry" and index in matched:
+            # Правило документа выполняется один раз, правило строк — для каждой строки.
+            for line in lines if scope == "lines" else [None]:
+                if not _matches(rule, doc, line):
+                    continue
+                name = rule["register"]
+                spec, rows = REGISTERS[name], registers[name]
+                row = _base(doc, len(rows) + 1)
+                if spec["org"]:
+                    row["org_id"] = doc["org_id"]
+                if spec["direction"]:
+                    if rule["direction"] not in ("+1", "-1", 1, -1):
+                        raise ValueError("Неверное направление движения")
+                    row["direction"] = int(rule["direction"])
+                for group in ("dims", "res"):
+                    if rule[group].keys() != spec[group].keys():
+                        raise ValueError("Неверный состав измерений или ресурсов")
+                    for key, path in rule[group].items():
+                        row[spec[group][key]] = _path(path, doc, line)
+                rows.append(row)
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            _fail("rules", "invalid_rule", f"Ошибка в правиле проведения № {stored['sort_order']}: {exc}")
+    return registers
+
+
+def _build_entries(doc, lines, rules):
+    """Подготовить проводки и проверить, что для каждой строки нашлось правило."""
+    entries, matched = [], set()
+    for stored in rules:
+        if stored["kind"] != "entry":
+            continue
+        rule = stored["definition"]
+        try:
+            if rule["for_each"] != "lines":
+                raise ValueError("Неверная область применения правила")
+            for index, line in enumerate(lines):
+                # Правила идут по sort_order: после первого совпадения строку пропускаем.
+                if index in matched:
                     continue
                 if not _matches(rule, doc, line):
                     continue
-                if stored["kind"] == "register":
-                    name = rule["register"]
-                    spec, rows = REGISTERS[name], registers[name]
-                    row = _base(doc, len(rows) + 1)
-                    if spec["org"]:
-                        row["org_id"] = doc["org_id"]
-                    if spec["direction"]:
-                        if rule["direction"] not in ("+1", "-1", 1, -1):
-                            raise ValueError("Неверное направление движения")
-                        row["direction"] = int(rule["direction"])
-                    for group in ("dims", "res"):
-                        if rule[group].keys() != spec[group].keys():
-                            raise ValueError("Неверный состав измерений или ресурсов")
-                        for key, path in rule[group].items():
-                            row[spec[group][key]] = _path(path, doc, line)
-                    rows.append(row)
-                else:
-                    row = {**_base(doc, len(entries) + 1), "org_id": doc["org_id"],
-                           "currency": doc["currency"], "amount": _path(rule["amount"], doc, line)}
-                    if not isinstance(row["amount"], Decimal) or not row["amount"].is_finite() or row["amount"] < 0:
-                        raise ValueError("Сумма проводки должна быть неотрицательной денежной суммой")
-                    for side, prefix in (("debit", "dt"), ("credit", "kt")):
-                        row[prefix + "_account"] = rule[side]["account"]
-                        row[prefix + "_dims"] = _dims(rule[side].get("dims", []), doc, line)
-                    matched.add(index)
-                    entries.append(row)
+                row = {**_base(doc, len(entries) + 1), "org_id": doc["org_id"],
+                       "currency": doc["currency"], "amount": _path(rule["amount"], doc, line)}
+                amount = row["amount"]
+                if not isinstance(amount, Decimal) or not amount.is_finite() or amount < 0:
+                    raise ValueError("Сумма проводки должна быть неотрицательной денежной суммой")
+                for side, prefix in (("debit", "dt"), ("credit", "kt")):
+                    row[prefix + "_account"] = rule[side]["account"]
+                    row[prefix + "_dims"] = _dims(rule[side].get("dims", []), doc, line)
+                matched.add(index)
+                entries.append(row)
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             _fail("rules", "invalid_rule", f"Ошибка в правиле проведения № {stored['sort_order']}: {exc}")
     missing = [detail(f"lines[{i}]", "no_entry_rule", f"нет правила проводок для строки {line['line_no']}")
                for i, line in enumerate(lines) if i not in matched]
     if missing:
         raise PostingError(missing)
-    return registers, entries
+    return entries
 
 
 def _insert(cur, table, row):
+    """Записать подготовленную строку с безопасной подстановкой имён колонок и значений."""
     cur.execute(sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
         sql.Identifier(table), sql.SQL(", ").join(map(sql.Identifier, row)),
         sql.SQL(", ").join(sql.Placeholder() for _ in row)), list(row.values()))
 
 
 def _audit(cur, doc_id, user_id, action):
+    """Добавить действие в журнал, чтобы сохранить сведения об авторе операции."""
     cur.execute("INSERT INTO audit_log (user_id, action, object_type, object_id) VALUES (%s, %s, %s, %s)",
                 (user_id, action, DOC_TYPE, doc_id))
 
@@ -200,7 +233,9 @@ def post(conn: psycopg.Connection, doc_id: UUID, user_id: UUID) -> None:
             _clear(cur, doc_id)
             cur.execute("SELECT * FROM meta_posting_rule WHERE doc_type = %s AND is_active "
                         "ORDER BY sort_order, kind", (DOC_TYPE,))
-            registers, entries = _build(doc, lines, cur.fetchall())
+            rules = cur.fetchall()
+            registers = _build_movements(doc, lines, rules)
+            entries = _build_entries(doc, lines, rules)
             if sum((e["amount"] for e in entries), Decimal("0.00")) != doc["amount_total"]:
                 _fail("amount_total", "entries_total_mismatch", "Сумма проводок не совпадает с суммой документа")
             accounts = {e[side] for e in entries for side in ("dt_account", "kt_account")}
@@ -212,7 +247,7 @@ def post(conn: psycopg.Connection, doc_id: UUID, user_id: UUID) -> None:
             for name, rows in registers.items():
                 for row in rows:
                     _insert(cur, REGISTERS[name]["table"], row)
-            # Бесплатные строки не создают нулевых бухгалтерских проводок.
+            # Нулевые суммы уже проверены, но база разрешает только положительные проводки.
             for number, row in enumerate((e for e in entries if e["amount"] != 0), 1):
                 row["line_no"] = number
                 _insert(cur, "acc_entry", row)
@@ -225,7 +260,9 @@ def post(conn: psycopg.Connection, doc_id: UUID, user_id: UUID) -> None:
 def unpost(conn: psycopg.Connection, doc_id: UUID, user_id: UUID) -> None:
     """Отменить проведение и записать действие в журнал в одной транзакции."""
     with conn.transaction(), conn.cursor(row_factory=dict_row) as cur:
-        _lock(cur, doc_id, nowait=False)
+        doc = _lock(cur, doc_id, nowait=False)
+        if doc["status"] == "deleted":
+            _fail("status", "deleted", "Документ помечен на удаление")
         _clear(cur, doc_id)
         cur.execute("UPDATE doc_goods_receipt SET status = 'draft', posted_at = NULL WHERE id = %s", (doc_id,))
         _audit(cur, doc_id, user_id, "unpost")

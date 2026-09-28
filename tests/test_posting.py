@@ -89,6 +89,31 @@ def test_repost_and_unpost(db):
     assert [r["action"] for r in db.execute("SELECT action FROM audit_log WHERE object_id = %s ORDER BY id", (doc,))] == ["post", "post", "unpost"]
 
 
+@pytest.mark.parametrize("was_posted", [False, True])
+def test_unpost_deleted_document_changes_nothing(db, was_posted):
+    doc = document(db)
+    if was_posted:
+        post(db, doc, USER)
+    db.execute("UPDATE doc_goods_receipt SET status = 'deleted' WHERE id = %s", (doc,))
+    before_doc = state(db, doc)
+    before_records = {table: records(db, doc, table) for table in TABLES}
+    before_audit = db.execute(
+        "SELECT * FROM audit_log WHERE object_id = %s ORDER BY id", (doc,)
+    ).fetchall()
+
+    with pytest.raises(PostingError) as error:
+        unpost(db, doc, USER)
+
+    assert error.value.details == [{
+        "field": "status", "code": "deleted", "message": "Документ помечен на удаление",
+    }]
+    assert state(db, doc) == before_doc
+    assert {table: records(db, doc, table) for table in TABLES} == before_records
+    assert db.execute(
+        "SELECT * FROM audit_log WHERE object_id = %s ORDER BY id", (doc,)
+    ).fetchall() == before_audit
+
+
 @pytest.mark.parametrize("item,account", [(604, "2410"), (605, "7010")])
 def test_other_item_kinds(db, item, account):
     doc = document(db, [(item, "1", "15000")])
