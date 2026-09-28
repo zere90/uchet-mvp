@@ -25,6 +25,11 @@ class ApiError(Exception):
         self.details = details or []
 
 
+class PostingError(ApiError):
+    def __init__(self, details: list[dict]):
+        super().__init__(422, "posting_failed", "Документ не проведён", details)
+
+
 def detail(field: str, code: str, message: str) -> dict:
     return {"field": field, "code": code, "message": message}
 
